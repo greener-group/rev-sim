@@ -2,7 +2,7 @@
 
 This repository contains code from the paper:
 
-- Greener JG. Reversible molecular simulation for training classical and machine learning force fields (2024)
+- Greener JG. Reversible molecular simulation for training classical and machine learning force field, [arXiv](https://arxiv.org/abs/2412.04374) (2024)
 
 Please cite the paper if you use the method or code.
 The licence is MIT.
@@ -37,7 +37,7 @@ For example, to train the water model on 32 threads:
 julia -t 32 water.jl
 ```
 The output directory is an optional argument.
-Code for DMS (training with reverse mode AD) and ensemble reweighting is also included, plus code in comments for running validation simulations and benchmarks with references to the relevant figures.
+Code for DMS (reverse mode AD) and training with ensemble reweighting is also included, plus code for running validation simulations and benchmarks with references to the relevant figures.
 
 The diamond model occasionally runs into a PyGIL error due to a known issue with PythonCall.
 [This may be fixed on later PythonCall versions](https://juliapy.github.io/PythonCall.jl/stable/faq/#Is-PythonCall/JuliaCall-thread-safe?).
