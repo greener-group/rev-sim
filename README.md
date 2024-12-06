@@ -2,7 +2,7 @@
 
 This repository contains code from the paper:
 
-- Greener JG. Reversible molecular simulation for training classical and machine learning force field, [arXiv](https://arxiv.org/abs/2412.04374) (2024)
+- Greener JG. Reversible molecular simulation for training classical and machine learning force fields, [arXiv](https://arxiv.org/abs/2412.04374) (2024)
 
 Please cite the paper if you use the method or code.
 The licence is MIT.
