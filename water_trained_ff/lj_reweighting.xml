@@ -1,0 +1,26 @@
+<ForceField>
+  <AtomTypes>
+    <Type name="tip3p-O" class="tip3p-O" element="O" mass="15.99943"/>
+    <Type name="tip3p-H" class="tip3p-H" element="H" mass="1.007947"/>
+  </AtomTypes>
+  <Residues>
+    <Residue name="HOH">
+      <Atom name="O" type="tip3p-O" charge="-0.9301401723586064"/>
+      <Atom name="H1" type="tip3p-H" charge="0.4650700861793032"/>
+      <Atom name="H2" type="tip3p-H" charge="0.4650700861793032"/>
+      <Bond atomName1="O" atomName2="H1"/>
+      <Bond atomName1="O" atomName2="H2"/>
+    </Residue>
+  </Residues>
+  <HarmonicBondForce>
+    <Bond type1="tip3p-O" type2="tip3p-H" length="0.09370238472382925" k="452168.94275433023"/>
+  </HarmonicBondForce>
+  <HarmonicAngleForce>
+    <Angle type1="tip3p-H" type2="tip3p-O" type3="tip3p-H" angle="1.9993073778309085" k="840.152888197764"/>
+  </HarmonicAngleForce>
+  <NonbondedForce coulomb14scale="0.8333333333333334" lj14scale="0.5">
+    <UseAttributeFromResidue name="charge"/>
+    <Atom type="tip3p-O" sigma="0.3220556822674776" epsilon="0.5630261429312349"/>
+    <Atom type="tip3p-H" sigma="1" epsilon="0"/>
+  </NonbondedForce>
+</ForceField>
