@@ -31,8 +31,10 @@ const n_molecules = 895
 const n_gas_molecules = 10
 const n_atoms = n_molecules * 3 - n_gas_molecules
 const n_atoms_x3 = n_atoms * 3
-const dist_cutoff    = T(1.2) # nm
-const dist_neighbors = T(1.35) # nm
+const n_atoms_water = (n_molecules - n_gas_molecules) * 3
+const rdf_exp_file = "soper_2013_water_rdf.txt"
+const dist_cutoff    = T(1.0) # nm
+const dist_neighbors = T(1.2) # nm
 const n_steps_nf = 20
 const crf_const =  T((1 / (dist_cutoff^3)) * ((78.3 - 1) / (2 * 78.3 + 1)))
 const O_mass = T(15.99943)
@@ -46,6 +48,8 @@ const two_pow_1o6 = T(2^(1/6))
 const bond_length_O2 = T(0.12074)
 const kcal_to_kJ = T(4.184)
 const boundary = CubicBoundary(T(3.0))
+const loss_weighting_rdf = T(0.05)
+const loss_weighting_ev = T(0.05)
 const to = TimerOutput()
 
 coords_copy(sys, neighbors=nothing; kwargs...) = copy(sys.coords)
@@ -56,7 +60,7 @@ VelocityCopyLogger(n_steps_log) = GeneralObservableLogger(velocities_copy,
                                         Array{SArray{Tuple{3}, T, 1, 3}, 1}, n_steps_log)
 
 # New interactions need to define an entry in generate_inter, inter_n_params, force_inter,
-#   force_grads_inter!, inject_atom_grads, Molly.force, Molly.potential_energy,
+#   force_grads_inter!, inject_atom_grads, extract_grads, Molly.force, Molly.potential_energy,
 #   a struct, Molly.use_neighbors, Base.:+ and possibly an atom type with zero and + functions
 
 struct DoubleExponential{T, C} <: PairwiseInteraction
@@ -582,7 +586,7 @@ function inject_atom_grads(::Union{LennardJones, DoubleExponential, LennardJones
     σ, ϵ, σ_gas, ϵ_gas, O_charge = params[1], params[2], params[3], params[4], params[end]
     H_charge = -O_charge / 2
     return map(1:n_atoms) do i
-        if i <= (n_atoms - n_gas_molecules * 2)
+        if i <= n_atoms_water
             if i % 3 == 1
                 Atom(i, O_charge, O_mass, σ, ϵ, false)
             else
@@ -598,7 +602,7 @@ function inject_atom_grads(::Buckingham, params)
     A, B, C, A_gas, B_gas, C_gas, O_charge = params
     H_charge = -O_charge / 2
     return map(1:n_atoms) do i
-        if i <= (n_atoms - n_gas_molecules * 2)
+        if i <= n_atoms_water
             if i % 3 == 1
                 BuckinghamAtom(i, O_charge, O_mass, A, B, C)
             else
@@ -610,15 +614,226 @@ function inject_atom_grads(::Buckingham, params)
     end
 end
 
+function extract_grads(::LennardJones, sys_grads, sys)
+    return [
+        sum(at -> at.σ, sys_grads.atoms[1:n_atoms_water]),
+        sum(at -> at.ϵ, sys_grads.atoms[1:n_atoms_water]),
+        sum(at -> at.σ, sys_grads.atoms[(n_atoms_water+1):end]),
+        sum(at -> at.ϵ, sys_grads.atoms[(n_atoms_water+1):end]),
+    ]
+end
+
+function extract_grads(inter_grads::DoubleExponential, sys_grads, sys)
+    return [
+        sum(at -> at.σ, sys_grads.atoms[1:n_atoms_water]),
+        sum(at -> at.ϵ, sys_grads.atoms[1:n_atoms_water]),
+        sum(at -> at.σ, sys_grads.atoms[(n_atoms_water+1):end]),
+        sum(at -> at.ϵ, sys_grads.atoms[(n_atoms_water+1):end]),
+        inter_grads.α,
+        inter_grads.β,
+    ]
+end
+
+function extract_grads(::Buckingham, sys_grads, sys)
+    return [
+        sum(at -> at.A, sys_grads.atoms[1:n_atoms_water]),
+        sum(at -> at.B, sys_grads.atoms[1:n_atoms_water]),
+        sum(at -> at.C, sys_grads.atoms[1:n_atoms_water]),
+        sum(at -> at.A, sys_grads.atoms[(n_atoms_water+1):end]),
+        sum(at -> at.B, sys_grads.atoms[(n_atoms_water+1):end]),
+        sum(at -> at.C, sys_grads.atoms[(n_atoms_water+1):end]),
+    ]
+end
+
+function extract_grads(inter_grads::LennardJonesSoftCore, sys_grads, sys)
+    α_g, λ_g, p_g, σ6_fac_g = inter_grads.α, inter_grads.λ, inter_grads.p, inter_grads.σ6_fac
+    inter = sys.pairwise_inters[1]
+    α, λ, p, σ6_fac = inter.α, inter.λ, inter.p, inter.σ6_fac
+    return [
+        sum(at -> at.σ, sys_grads.atoms[1:n_atoms_water]),
+        sum(at -> at.ϵ, sys_grads.atoms[1:n_atoms_water]),
+        sum(at -> at.σ, sys_grads.atoms[(n_atoms_water+1):end]),
+        sum(at -> at.ϵ, sys_grads.atoms[(n_atoms_water+1):end]),
+        α_g + σ6_fac_g * λ^p,
+        λ_g + σ6_fac_g * α * p * λ^(p - 1),
+    ]
+end
+
+function extract_grads(inter_grads::Buffered147, sys_grads, sys)
+    return [
+        sum(at -> at.σ, sys_grads.atoms[1:n_atoms_water]),
+        sum(at -> at.ϵ, sys_grads.atoms[1:n_atoms_water]),
+        sum(at -> at.σ, sys_grads.atoms[(n_atoms_water+1):end]),
+        sum(at -> at.ϵ, sys_grads.atoms[(n_atoms_water+1):end]),
+        inter_grads.δ,
+        inter_grads.γ,
+    ]
+end
+
+function read_rdf_data(rdf_exp_file)
+    rdf_OO, rdf_OH, rdf_HH = T[], T[], T[]
+    for line in readlines(rdf_exp_file)[3:end] # Skip 0.00 and 0.01 lines
+        cols = split(line)
+        push!(rdf_OO, parse(T, cols[2]))
+        push!(rdf_OH, parse(T, cols[4]))
+        push!(rdf_HH, parse(T, cols[6]))
+    end
+    return rdf_OO[87:334], # 248 values in 0.261:0.003:1.002 (2.61 Å -> 10.02 Å)
+           rdf_OH[54:334], # 281 values in 0.162:0.003:1.002 (1.62 Å -> 10.02 Å)
+           rdf_HH[74:334]  # 261 values in 0.222:0.003:1.002 (2.22 Å -> 10.02 Å)
+end
+
+const rdf_exp_OO, rdf_exp_OH, rdf_exp_HH = read_rdf_data(rdf_exp_file)
+
+function rdf_differentiable(coords_1::Vector{SVector{3, T}}, coords_2::Vector{SVector{3, T}},
+                            boundary, d=T(0.0005), x_min=T(0.1), x_max=T(2.5),
+                            exp_cutoff=T(0.04)) where T
+    n_atoms_1, n_atoms_2 = length(coords_1), length(coords_2)
+    dists = T[]
+    @inbounds for i in 1:n_atoms_1
+        for j in 1:n_atoms_2
+            dist = norm(vector(coords_1[i], coords_2[j], boundary))
+            if !iszero(dist)
+                push!(dists, dist)
+            end
+        end
+    end
+    sort!(dists)
+    d_min, d_max = dists[1], dists[end]
+
+    # See Wang2023 equations 4 and 6
+    xs = [x_min + d * (i - 1) for i in 1:(Int(cld(x_max - x_min, d)) + 1)] # Range has Enzyme issue
+    # Pre-calculate sum in denominator for each distance
+    denoms = zero(dists)
+    n_chunks = Threads.nthreads() * 10
+    offset = Int(x_min / d) - 1
+    Threads.@threads for chunk_i in 1:n_chunks
+        @inbounds for di in chunk_i:n_chunks:length(dists)
+            sum_pair = zero(T)
+            dist = dists[di]
+            start_i = max(Int(cld(dist - exp_cutoff, d)) - offset, 1)
+            end_i   = min(Int(fld(dist + exp_cutoff, d)) - offset, length(xs))
+            for xi in start_i:end_i
+                sum_pair += exp(-((xs[xi] - dist)^2) / d)
+            end
+            denoms[di] = sum_pair
+        end
+    end
+
+    # Calculate p(μ_k)
+    # Equation 4 is missing d term?
+    pre_fac = box_volume(boundary) / (4 * T(π) * n_atoms_1 * n_atoms_2 * d)
+    hist = zero(xs)
+    Threads.@threads for chunk_i in 1:n_chunks
+        @inbounds for xi in chunk_i:n_chunks:length(xs)
+            sum_pair = zero(T)
+            x = xs[xi]
+            x_p_cutoff, x_m_cutoff = x + exp_cutoff, x - exp_cutoff
+            reading = false
+            for di in eachindex(dists)
+                dist = dists[di]
+                if dist > x_p_cutoff
+                    break
+                elseif !reading && dist >= x_m_cutoff
+                    reading = true
+                end
+                if reading
+                    sum_pair += exp(-((x - dist)^2) / d) / denoms[di]
+                end
+            end
+            hist[xi] = pre_fac * sum_pair / x^2
+        end
+    end
+    return xs, hist
+end
+
+function loss_rdf_part(coords_1, coords_2, boundary, rdf_exp, rng)
+    rdf_sim = rdf_differentiable(coords_1, coords_2, boundary)[2][rng]
+    @assert length(rdf_sim) == length(rdf_exp)
+    return sum(abs.(rdf_sim .- rdf_exp))
+end
+
+const coords_O_inds = 1:3:n_atoms_water
+const coords_H_inds = [i for i in 1:n_atoms_water if (i + 2) % 3 != 0]
+
+function loss_rdf(coords, boundary, use_zero_term)
+    coords_O = coords[coords_O_inds]
+    coords_H = coords[coords_H_inds]
+    # Slices only works for this d and x_min
+    loss_OO = loss_rdf_part(coords_O, coords_O, boundary, rdf_exp_OO, 323:6:1805)
+    loss_OH = loss_rdf_part(coords_O, coords_H, boundary, rdf_exp_OH, 125:6:1805)
+    # HH RDF gives OOM error
+    loss_HH = zero(T) # loss_rdf_part(coords_H, coords_H, boundary, rdf_exp_HH, 245:6:1805)
+    if use_zero_term
+        # Involve all coordinates in the gradient
+        zero_term = zero(T) * sum(sum(coords))
+    else
+        zero_term = zero(T)
+    end
+    return loss_OO + loss_OH + loss_HH + zero_term
+end
+
+function ChainRulesCore.rrule(::typeof(loss_rdf_part), coords_1, coords_2, boundary, rdf_exp, rng)
+    Y = loss_rdf_part(coords_1, coords_2, boundary, rdf_exp, rng)
+
+    function loss_rdf_part_pullback(dy)
+        d_coords_1 = zero(coords_1)
+        d_coords_2 = zero(coords_2)
+        Enzyme.autodiff(
+            Enzyme.Reverse,
+            loss_rdf_part,
+            Enzyme.Active,
+            Enzyme.Duplicated(coords_1, d_coords_1),
+            Enzyme.Duplicated(coords_2, d_coords_2),
+            Enzyme.Const(boundary),
+            Enzyme.Const(rdf_exp),
+            Enzyme.Const(rng),
+        )
+        return NoTangent(), dy .* d_coords_1, dy .* d_coords_2, NoTangent(),
+               NoTangent(), NoTangent()
+    end
+
+    return Y, loss_rdf_part_pullback
+end
+
+function enthalpy_vaporization(sys)
+    # See https://docs.openforcefield.org/projects/evaluator/en/stable/properties/properties.html
+    RT = T(2.45) # uconvert(u"kJ/mol", Unitful.R * 295.15u"K")
+    mean_U_gas = T(3.69)
+    # n_threads=1 to avoid possible Enzyme issue
+    snapshot_U_liquid = potential_energy(sys, find_neighbors(sys); n_threads=1) / n_molecules
+    ΔH_vap = mean_U_gas - snapshot_U_liquid + RT
+    return ΔH_vap
+end
+
+function loss_enth_vap(sys)
+    ΔH_vap = enthalpy_vaporization(sys)
+    # See Glattli2002 and https://www.engineeringtoolbox.com/water-properties-d_1573.html
+    # 44.12 kJ/mol at 295.15 K plus amount to account for not using bond/angle constraints
+    ΔH_vap_exp = T(44.12 + 2.8)
+    return (ΔH_vap - ΔH_vap_exp) ^ 2
+end
+
+struct LossAccum{G}
+    gas_coords::G
+    rdf_sum::T
+    enth_vap_sum::T
+end
+
 function loss_fn_init(loss_type, n_blocks)
-    if loss_type == :mse || loss_type == :mae
-        return [zero(SVector{3, T}) for _ in 1:(n_blocks*n_gas_molecules)]
+    if loss_type in (:diff, :rdf, :ev, :diff_rdf, :diff_ev, :diff_rdf_ev)
+        loss_accum = LossAccum(
+            [zero(SVector{3, T}) for _ in 1:(n_blocks*n_gas_molecules)],
+            zero(T),
+            zero(T),
+        )
+        return loss_accum
     else
         throw(ArgumentError("loss_type not recognised"))
     end
 end
 
-function gas_coords(sys)
+function extract_gas_coords(sys)
     all_coord_term = sum(sys.coords) * 0 # Makes coordinate gradients zero not nothing
     # Using map here gave gradients that were 10x off
     inds1 = [length(sys) - 2*n_gas_molecules + 2*i - 1 for i in 1:n_gas_molecules]
@@ -629,26 +844,29 @@ function gas_coords(sys)
 end
 
 function loss_fn_accum(loss_accum, sys, loss_type, block_n)
-    if loss_type == :mse || loss_type == :mae
-        return vcat(
-            loss_accum[1:((block_n-1)*n_gas_molecules)],
-            gas_coords(sys),
-            loss_accum[((block_n*n_gas_molecules)+1):end],
-        )
-    else
-        throw(ArgumentError("loss_type not recognised"))
-    end
+    loss_accum_updated = LossAccum(
+        vcat(
+            loss_accum.gas_coords[1:((block_n-1)*n_gas_molecules)],
+            extract_gas_coords(sys),
+            loss_accum.gas_coords[((block_n*n_gas_molecules)+1):end],
+        ),
+        loss_accum.rdf_sum + (loss_type in (:rdf, :diff_rdf, :diff_rdf_ev) ?
+                                loss_rdf(sys.coords, sys.boundary, loss_type == :rdf) : zero(T)),
+        loss_accum.enth_vap_sum + (loss_type in (:ev, :diff_ev, :diff_rdf_ev) ?
+                                loss_enth_vap(sys) : zero(T)),
+    )
+    return loss_accum_updated
 end
 
-function calculate_D(loss_accum, loss_frequency)
+function calculate_D(gas_coords, loss_frequency)
     D = zero(T)
-    n_start_frames = length(loss_accum) ÷ (2 * n_gas_molecules)
+    n_start_frames = length(gas_coords) ÷ (2 * n_gas_molecules)
     for start_i in 1:n_start_frames
-        coords_t0 = loss_accum[(((start_i-1)*n_gas_molecules)+1):(start_i*n_gas_molecules)]
+        coords_t0 = gas_coords[(((start_i-1)*n_gas_molecules)+1):(start_i*n_gas_molecules)]
         coords_t = copy(coords_t0)
         diffs = similar(coords_t0)
         for j in (start_i+1):(start_i+n_start_frames)
-            c = loss_accum[(((j-1)*n_gas_molecules)+1):(j*n_gas_molecules)]
+            c = gas_coords[(((j-1)*n_gas_molecules)+1):(j*n_gas_molecules)]
             diffs .= vector.(coords_t, c, (boundary,))
             coords_t .+= diffs
         end
@@ -658,46 +876,74 @@ function calculate_D(loss_accum, loss_frequency)
     return D / (6 * n_start_frames)
 end
 
-function ChainRulesCore.rrule(::typeof(calculate_D), loss_accum, loss_frequency)
-    Y = calculate_D(loss_accum, loss_frequency)
+function ChainRulesCore.rrule(::typeof(calculate_D), gas_coords, loss_frequency)
+    Y = calculate_D(gas_coords, loss_frequency)
 
     function calculate_D_pullback(dy)
-        d_loss_accum = zero(loss_accum)
+        d_gas_coords = zero(gas_coords)
         Enzyme.autodiff(
             Enzyme.Reverse,
             calculate_D,
             Enzyme.Active,
-            Enzyme.Duplicated(loss_accum, d_loss_accum),
+            Enzyme.Duplicated(gas_coords, d_gas_coords),
             Enzyme.Const(loss_frequency),
         )
-        return NoTangent(), d_loss_accum .* dy, NoTangent()
+        return NoTangent(), d_gas_coords .* dy, NoTangent()
     end
 
     return Y, calculate_D_pullback
 end
 
 function loss_fn_final(loss_accum, loss_type, loss_frequency)
-    D = calculate_D(loss_accum, loss_frequency)
+    D = calculate_D(loss_accum.gas_coords, loss_frequency)
     D_conv = D * T(1e-6) # Convert from nm^2 * ps^-1 to m^2 * s^-1
     D_exp = T(2.0e-9) # m^2 * s^-1
-    if loss_type == :mse
+    if loss_type in (:diff, :diff_rdf, :diff_ev, :diff_rdf_ev)
         loss_weight = 1e18 # m^-4 * s^2
-        return loss_weight * (D_conv - D_exp)^2
-    elseif loss_type == :mae
-        loss_weight = 1e9 # m^-2 * s^1
-        return loss_weight * abs(D_conv - D_exp)
+        l_diff = loss_weight * (D_conv - D_exp)^2
     else
-        throw(ArgumentError("loss_type not recognised"))
+        l_diff = zero(T)
     end
+    n_blocks = length(loss_accum.gas_coords) ÷ n_gas_molecules
+    l_rdf = loss_weighting_rdf * loss_accum.rdf_sum / n_blocks
+    l_ev = loss_weighting_ev * loss_accum.enth_vap_sum / n_blocks
+    return l_diff + l_rdf + l_ev
 end
 
-function loss_and_grads(sys, loss_accum, loss_type, loss_frequency)
-    l, grads = withgradient(loss_fn_final, loss_accum, loss_type, loss_frequency)
-    D = calculate_D(loss_accum, loss_frequency)
+function loss_and_grads_diff(sys, loss_accum, loss_type, loss_frequency)
+    loss_accum_diff = LossAccum(loss_accum.gas_coords, zero(T), zero(T))
+    l_diff, grads = withgradient(loss_fn_final, loss_accum_diff, loss_type, loss_frequency)
+    D = calculate_D(loss_accum.gas_coords, loss_frequency)
     D_conv = D * T(1e-6) # Convert from nm^2 * ps^-1 to m^2 * s^-1
-    dl_dgc_snapshots = grads[1]
-    dl_dp = zeros(T, sum(inter_n_params, sys.pairwise_inters))
-    return l, D_conv, dl_dgc_snapshots, dl_dp
+    dl_dgc_snapshots = isnothing(grads[1].gas_coords) ? zero(sys.coords) : grads[1].gas_coords
+    return l_diff, D_conv, dl_dgc_snapshots
+end
+
+function loss_and_grads_rdf_ev(sys, loss_type, n_blocks)
+    (l, l_rdf, l_ev), grads = withgradient(sys) do sys
+        if loss_type in (:rdf, :diff_rdf, :diff_rdf_ev)
+            l_rdf = loss_weighting_rdf * loss_rdf(sys.coords, sys.boundary, true) / n_blocks
+        else
+            l_rdf = zero(T)
+        end
+        if loss_type in (:ev, :diff_ev, :diff_rdf_ev)
+            l_ev = loss_weighting_ev * loss_enth_vap(sys) / n_blocks
+        else
+            l_ev = zero(T)
+        end
+        return l_rdf + l_ev, l_rdf, l_ev
+    end
+    sys_grads = grads[1]
+    dl_dc = isnothing(sys_grads) ? zero(sys.coords) : sys_grads.coords
+    if isnothing(sys_grads) || isnothing(sys_grads.atoms)
+        dl_dp = zeros(T, sum(inter_n_params, sys.pairwise_inters))
+    else
+        dl_dp = extract_grads(sys_grads.pairwise_inters[1], sys_grads, sys)
+        push!(dl_dp, sum(ad.element == "O" ? at.charge : (-at.charge / 2)
+                         for (at, ad) in zip(sys_grads.atoms[1:n_atoms_water],
+                                             sys.atoms_data[1:n_atoms_water])))
+    end
+    return l_rdf, l_ev, dl_dc, dl_dp
 end
 
 function generate_noise!(noise, seed, k=T(ustrip(u"u * nm^2 * ps^-2 * K^-1", Unitful.k)))
@@ -1285,12 +1531,12 @@ function reverse_sim(coords, velocities, noise_seeds, γ, n_steps, n_steps_loss,
     fwd_coords_logger = values(fwd_loggers.coords)
     fwd_velocities_logger = values(fwd_loggers.velocities)
 
-    loss, D, dl_dgc_snapshots, dl_dp_accum = loss_and_grads(sys, loss_accum_fwd,
-                                                            loss_type, loss_frequency)
-    dl_dfc = zeros(T, n_atoms_x3)
+    l_diff, D, dl_dgc_snapshots = loss_and_grads_diff(sys, loss_accum_fwd, loss_type, loss_frequency)
+    loss_accum_rdf, loss_accum_ev, dl_dfc_raw, dl_dp_accum = loss_and_grads_rdf_ev(sys, loss_type, n_blocks)
+    dl_dfc = Vector(reinterpret(T, SVector{3, T}.(dl_dfc_raw)))
     # Gas coordinates are average of the two atom coordinates
     dl_dfc_gas = repeat(dl_dgc_snapshots[(end-n_gas_molecules+1):end]; inner=2) ./ 2
-    dl_dfc[(end-(n_gas_molecules*3*2)+1):end] .= reinterpret(T, dl_dfc_gas)
+    dl_dfc[(end-(n_gas_molecules*3*2)+1):end] .+= reinterpret(T, dl_dfc_gas)
     atom_masses_3N = repeat(masses(sys); inner=3)
     dt2 = dt^2
     dF_dp = zeros(T, n_atoms_x3, n_params)
@@ -1344,9 +1590,13 @@ function reverse_sim(coords, velocities, noise_seeds, γ, n_steps, n_steps_loss,
             if loss_count != n_blocks
                 sys.coords .= fwd_coords_logger[end-loss_count]
                 sys.velocities .= fwd_velocities_logger[end-loss_count]
-                dl_dfc .= zero(T)
+                @timeit to "3.a" loss_block_rdf, loss_block_ev, dl_dfc_raw_block, dl_dp_accum_block = loss_and_grads_rdf_ev(sys, loss_type, n_blocks)
+                loss_accum_rdf += loss_block_rdf
+                loss_accum_ev  += loss_block_ev
+                dl_dfc .= Vector(reinterpret(T, SVector{3, T}.(dl_dfc_raw_block)))
                 dl_dfc_gas .= repeat(dl_dgc_snapshots[(end-(n_gas_molecules*(loss_count+1))+1):(end-n_gas_molecules*loss_count)]; inner=2) ./ 2
-                dl_dfc[(end-(n_gas_molecules*3*2)+1):end] .= reinterpret(T, dl_dfc_gas)
+                dl_dfc[(end-(n_gas_molecules*3*2)+1):end] .+= reinterpret(T, dl_dfc_gas)
+                dl_dp_accum .= dl_dp_accum .+ dl_dp_accum_block
                 dl_dfi .= zero(T)
                 dl_dfi_accum_1 .= dl_dfc .* (1 .+ exp_mγdt)
                 dl_dfi_accum_2 .= dl_dfc .* (1 .+ exp_mγdt)
@@ -1355,15 +1605,19 @@ function reverse_sim(coords, velocities, noise_seeds, γ, n_steps, n_steps_loss,
             end
         end
     end
+    l_rdf = loss_accum_rdf
+    l_ev  = loss_accum_ev
+    loss = l_diff + l_rdf + l_ev
+    dl_dp = dl_dp_accum
     println("rev n_threads ", n_threads)
     println("rev loss ", loss)
     println("rev gradient ", dl_dp_accum)
 
-    return sys, loss, D, dl_dp_accum
+    return sys, loss, dl_dp, D, l_diff, l_rdf, l_ev
 end
 
 inter_type = :lj
-loss_type = :mse
+loss_type = :diff_rdf_ev
 σ, ϵ = T(0.315), T(0.636)
 σ_gas, ϵ_gas = T(0.3297), T(0.438)
 α, β = T(16.766), T(4.427)
@@ -1384,11 +1638,11 @@ elseif inter_type == :buff
     params = [σ, ϵ, σ_gas, ϵ_gas, δ, γ_buff, O_charge]
 end
 
-γ = T(0.0)
-n_steps_equil = 10
-n_steps       = 10 # May also want to change below
+γ = T(1.0)
+n_steps_equil = 6
+n_steps       = 6 # May also want to change below
 n_steps_loss  = 2 # Should be a factor of n_steps
-n_steps_trunc = 10
+n_steps_trunc = 6
 dt = T(0.001) # ps
 n_threads = Threads.nthreads()
 noise_seeds = [rand_seed() for i in 1:n_steps]
@@ -1412,9 +1666,9 @@ grads_fd = map(eachindex(params)) do i
     end
 end
 
-sys_rev, loss_rev, D_rev, grads_rev = reverse_sim(sys_fwd.coords, sys_fwd.velocities,
-                    noise_seeds, γ, n_steps, n_steps_loss, n_steps_trunc, params, dt,
-                    n_threads, sys_fwd.loggers, loss_accum_fwd, inter_type, loss_type)
+sys_rev, loss_rev, grads_rev, D_rev, l_diff, l_rdf, l_ev = reverse_sim(sys_fwd.coords,
+                    sys_fwd.velocities, noise_seeds, γ, n_steps, n_steps_loss, n_steps_trunc,
+                    params, dt, n_threads, sys_fwd.loggers, loss_accum_fwd, inter_type, loss_type)
 
 # This will only be true if n_steps_trunc >= n_steps_loss
 @test maximum(norm.(coords_start .- sys_rev.coords)) < (T == Float64 ? 1e-9 : 1e-4)
@@ -1427,12 +1681,12 @@ println("Diff forward reverse: ", abs.(grads_fwd .- grads_rev))
 println("%err forward reverse: ", 100 .* abs.(grads_fwd .- grads_rev) ./ abs.(grads_fwd))
 
 function train(inter_type, params_start)
-    loss_type = :mse
+    loss_type = :diff_rdf_ev
     γ = T(1.0)
     dt = T(0.001) # ps
-    n_steps = 50_000
-    n_steps_equil = 10_000
-    n_steps_loss = 200
+    n_steps = 50_000 # 50 ps
+    n_steps_equil = 10_000 # 10 ps
+    n_steps_loss = 500 # 500 fs
     n_steps_trunc = 200
     n_threads = Threads.nthreads()
     n_epochs = 10_000
@@ -1461,7 +1715,7 @@ function train(inter_type, params_start)
                 coords_start, velocities_start, noise_seeds, γ, n_steps, n_steps_loss,
                 params, dt, n_threads, inter_type, loss_type, false, true)
 
-        sys_rev, loss_rev, D_rev, grads_rev = reverse_sim(
+        sys_rev, loss_rev, grads_rev, D_rev, l_diff, l_rdf, l_ev = reverse_sim(
                 sys_fwd.coords, sys_fwd.velocities, noise_seeds, γ, n_steps,
                 n_steps_loss, n_steps_trunc, params, dt,
                 n_threads, sys_fwd.loggers, loss_accum_fwd, inter_type, loss_type)
@@ -1473,7 +1727,7 @@ function train(inter_type, params_start)
         open("$out_dir/train_$run_n.log", "a") do of
             println(
                 of,
-                "$epoch_n $loss_rev $D_rev ",
+                "$epoch_n $loss_rev $D_rev $l_diff $l_rdf $l_ev ",
                 join(params, " "), " ",
                 join(grads_rev, " "),
             )
@@ -1549,10 +1803,10 @@ function train_dexp()
 end
 
 function train_buck()
-    As        = T.([359999.2])
-    Bs        = T.([37.795])
-    Cs        = T.([0.002343])
-    O_charges = T.([-0.834])
+    As        = T.([414735.6])
+    Bs        = T.([36.147])
+    Cs        = T.([0.0029159])
+    O_charges = T.([-0.94904])
 
     inds = Iterators.product(eachindex(As), eachindex(Bs), eachindex(Cs), eachindex(O_charges))
     A_ind, B_ind, C_ind, O_charge_ind = collect(inds)[run_n]
@@ -1583,7 +1837,7 @@ function train_ljsc()
     λ = λs[λ_ind]
     O_charge = O_charges[O_charge_ind]
     σ_gas, ϵ_gas = T(0.3297), T(0.438)
-    params = [σ, ϵ, α, σ_gas, ϵ_gas, λ, O_charge]
+    params = [σ, ϵ, σ_gas, ϵ_gas, α, λ, O_charge]
 
     inter_type = :ljsc
     train(inter_type, params)
@@ -1624,52 +1878,41 @@ elseif run_inter_type == "buff"
 end
 
 #=
-# Benchmark
-for rep in 1:3
-    reset_timer!(to)
-    forward_sim(coords_start, velocities_start, noise_seeds, γ, 100, 100, params, dt, n_threads, inter_type, loss_type, false, false)
-    println()
-    show(to)
-    println()
-end
-for rep in 1:3
-    reset_timer!(to)
-    reverse_sim(sys_fwd.coords, sys_fwd.velocities, noise_seeds, γ, 100, 100, 100, params, dt, n_threads, sys_fwd.loggers, loss_accum_fwd, inter_type, loss_type)
-    println()
-    show(to)
-    println()
-end
-=#
-#=
 # Run longer simulations for validation (Figure 4B)
 for inter_type in (:lj, :dexp, :buck, :ljsc)
     for rep_n in 1:5
         if inter_type == :lj
-            σ, ϵ = T(0.3409279162545354), T(0.6893488104331025)
-            σ_gas, ϵ_gas = T(0.3521234084056665), T(0.4713977679122796)
-            O_charge = T(-0.8205720550135371)
+            σ, ϵ = T(0.31832194204389924), T(0.5947823426634081)
+            σ_gas, ϵ_gas = T(0.3639716379841277), T(0.4807315226235313)
+            O_charge = T(-0.855659973377653)
             params = [σ, ϵ, σ_gas, ϵ_gas, O_charge]
         elseif inter_type == :dexp
-            σ, ϵ = T(0.335672186281716), T(0.6782721489843005)
-            σ_gas, ϵ_gas = T(0.34845149656580865), T(0.46603183706809853)
-            α, β = T(17.843187982960053), T(4.722324542394384)
-            O_charge = T(-0.8174543110135074)
+            σ, ϵ = T(0.3087771042120694), T(0.5872449770546938)
+            σ_gas, ϵ_gas = T(0.3686775112188305), T(0.4833319904384378)
+            α, β = T(18.859984800306243), T(4.492909827723367)
+            O_charge = T(-0.8507621674226687)
             params = [σ, ϵ, σ_gas, ϵ_gas, α, β, O_charge]
         elseif inter_type == :buck
-            A, B, C = T(405331.60242937884), T(37.020398787211334), T(0.002979073317511142)
-            A_gas, B_gas, C_gas = T(397767.94880717236), T(37.601492297129695), T(0.0030011990505467347)
-            O_charge = T(-0.9454276172884645)
+            A, B, C = T(428770.59294074954), T(36.27826633041324), T(0.0027749505318153513)
+            A_gas, B_gas, C_gas = T(364380.55713379645), T(40.217954236898876), T(0.002984377806273812)
+            O_charge = T(-0.9106066765767504)
             params = [A, B, C, A_gas, B_gas, C_gas, O_charge]
         elseif inter_type == :ljsc
-            σ, ϵ = T(0.362004623082507), T(0.7278963003389142)
-            σ_gas, ϵ_gas = T(0.11418818652495372), T(0.3820873887436166)
-            α_ljsc, λ = T(0.3786753896602146), T(0.08645556453318586)
-            O_charge = T(-0.8337707326423408)
+            σ, ϵ = T(0.3185900420441584), T(0.5917282887940764)
+            σ_gas, ϵ_gas = T(0.3669877136950468), T(0.4842219440215553)
+            α_ljsc, λ = T(0.08247151226063537), T(0.08247146341952465)
+            O_charge = T(-0.8561152311915383)
             params = [σ, ϵ, σ_gas, ϵ_gas, α_ljsc, λ, O_charge]
+        elseif inter_type == :buff
+            σ, ϵ = T(0.315), T(0.636)
+            σ_gas, ϵ_gas = T(0.3297), T(0.438)
+            δ, γ_buff = T(0.07), T(0.12)
+            O_charge = T(-0.834)
+            params = [σ, ϵ, σ_gas, ϵ_gas, δ, γ_buff, O_charge]
         end
 
         γ = T(1.0)
-        loss_type = :mse
+        loss_type = :diff
         n_steps_equil = 10_000 # 10 ps
         n_steps       = 100_000 # 100 ps
         n_steps_loss  = 200
@@ -1687,7 +1930,7 @@ for inter_type in (:lj, :dexp, :buck, :ljsc)
                             loss_type, false, true)
 
         loss_frequency = n_steps_loss * dt
-        D = calculate_D(loss_accum_fwd, loss_frequency)
+        D = calculate_D(loss_accum_fwd.gas_coords, loss_frequency)
         D_conv = D * T(1e-6) # Convert from nm^2 * ps^-1 to m^2 * s^-1
         println(inter_type, " ", D_conv)
     end
