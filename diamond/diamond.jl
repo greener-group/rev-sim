@@ -2201,7 +2201,7 @@ end
 =#
 #=
 # Run longer simulations for validation (Figure 4C-D)
-model_dir = "train_diamond"
+model_dir = "trained_model"
 epoch_n = 1072
 for n_steps in [
             2_000,   # 1 ps
@@ -2213,7 +2213,7 @@ for n_steps in [
         ]
     params_sw = parse.(T, split(readlines("$model_dir/params_sw.txt")[epoch_n]))
     params_gnn = GNNParams(pymod_pickle.load(
-                pybuiltins.open("$model_dir/gnn_params/params_gnn_ep_$epoch_n.pkl", "rb")))
+                pybuiltins.open("$model_dir/params_gnn_ep_$epoch_n.pkl", "rb")))
     γ = T(4.0)
     n_steps_loss  = 500 # 250 fs
     n_steps_buffer = 0

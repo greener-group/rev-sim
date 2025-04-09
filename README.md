@@ -32,7 +32,7 @@ pip install -e . # From difftre directory (https://github.com/tummfm/difftre)
 ## Running
 
 By default each script trains the relevant model with reversible simulation.
-For example, to train the water model on 32 threads:
+For example, to train the water model on 32 threads from the `water` directory:
 ```bash
 julia -t 32 water.jl
 ```
