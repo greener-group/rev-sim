@@ -10,7 +10,7 @@ ENV["JULIA_CONDAPKG_BACKEND"] = "Null"
 using Molly
 using PythonCall
 
-model_fp = nothing # Set to nothing to use the pre-trained MACE-OFF model
+model_fp = "trained_model_maceoff.pt" # Set to nothing to use the pre-trained MACE-OFF model
 out_dir = "trajs_maceoff"
 traj_fp       = "$out_dir/water.dcd"
 energy_fp     = "$out_dir/water.txt"
