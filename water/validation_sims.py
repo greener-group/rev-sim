@@ -1,4 +1,6 @@
 # Run water simulations across different temperatures to validate force fields
+# See https://github.com/greener-group/rev-sim for setup instructions
+# Licence is MIT
 
 from openmm.app import *
 from openmm import *

@@ -16,7 +16,17 @@ The code was run with Julia v1.10.3 and the following package versions:
 - StaticArrays v1.9.7.
 
 Other versions may or may not work.
-In addition, the diamond model was run on a GPU with the following:
+The [MACE-OFF](https://github.com/ACEsuit/mace-off) model was run on a GPU with the following:
+- PythonCall v0.9.20.
+- MACE and PyTorch should be installed in a conda environment and the environment activated. Example commands:
+```bash
+conda create --name maceoff python==3.11
+conda activate maceoff
+pip install torch # Installed v2.6.0
+pip install mace-torch
+```
+
+The diamond model was run on a GPU with the following:
 - PythonCall v0.9.20.
 - GPUCompiler v0.26.5 with [this change](https://github.com/JuliaGPU/GPUCompiler.jl/pull/556/commits/0e00885f9c3d54a6b999e84d58d6ac6cfbdc0023) in order for higher order AD to work.
 - [difftre](https://github.com/tummfm/difftre), a Python package that uses Jax, should be installed in a conda environment and the environment activated. Example commands:
@@ -37,7 +47,8 @@ For example, to train the water model on 32 threads from the `water` directory:
 julia -t 32 water.jl
 ```
 The output directory is an optional argument.
-Code for DMS (reverse mode AD) and training with ensemble reweighting is also included, plus code for running validation simulations and benchmarks with references to the relevant figures.
+Code for DMS (reverse mode AD) and training with ensemble reweighting is included, plus code for running validation simulations and benchmarks with references to the relevant figures.
+Trained models and force field files are also included.
 
 The diamond model occasionally runs into a PyGIL error due to a known issue with PythonCall.
 [This may be fixed on later PythonCall versions](https://juliapy.github.io/PythonCall.jl/stable/faq/#Is-PythonCall/JuliaCall-thread-safe?).
