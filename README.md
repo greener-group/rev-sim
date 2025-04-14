@@ -1,6 +1,6 @@
 # Reversible molecular simulation
 
-This repository contains code from the paper:
+This repository contains code and data from the paper:
 
 - Greener JG. Reversible molecular simulation for training classical and machine learning force fields, [arXiv](https://arxiv.org/abs/2412.04374) (2024)
 
@@ -16,7 +16,7 @@ The code was run with Julia v1.10.3 and the following package versions:
 - StaticArrays v1.9.7.
 
 Other versions may or may not work.
-The [MACE-OFF](https://github.com/ACEsuit/mace-off) model was run on a GPU with the following:
+The [MACE-OFF23](https://github.com/ACEsuit/mace-off) model was run on a GPU with the following:
 - PythonCall v0.9.20.
 - MACE and PyTorch should be installed in a conda environment and the environment activated. Example commands:
 ```bash
